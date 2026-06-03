@@ -169,84 +169,85 @@ the number of paths in `images`.
 
 ## LLaMA-Factory Training
 
-Prepare conda, PyTorch, and LLaMA-Factory separately. These scripts do not
-install dependencies.
-
-Write the training YAML only:
-
-```bash
-MODEL_PATH=/path/to/your/qwen-vl-small \
-bash scripts/write_llamafactory_train_yaml.sh
-```
-
-The default YAML path is:
+Prepare conda, PyTorch, and LLaMA-Factory separately. This repo only provides an
+example YAML:
 
 ```text
 configs/qwen35_vl_freeze_sft.yaml
 ```
 
-Start training:
+Before training, copy the dataset project you want into LLaMA-Factory's
+`data/` directory. For the screenshot project:
 
 ```bash
-MODEL_PATH=/path/to/your/qwen-vl-small \
-LLAMAFACTORY_DIR=/path/to/LLaMA-Factory \
-bash scripts/train_llamafactory_qwen_vl.sh
+cd /path/to/LLaMA-Factory
+mkdir -p data/screenshot_summary
+
+cd /path/to/this-repo
+cp -r data/screenshot_summary/raw /path/to/LLaMA-Factory/data/screenshot_summary/
+cp -r data/screenshot_summary/processed /path/to/LLaMA-Factory/data/screenshot_summary/
 ```
 
-The train script copies this repo's raw images and
-`data/processed/llamafactory_sft.json` into LLaMA-Factory, updates
-`data/dataset_info.json`, writes the freeze SFT yaml, and starts training.
+Register the dataset in LLaMA-Factory's `data/dataset_info.json`:
 
-The generated YAML uses LLaMA-Factory freeze fine-tuning:
+```json
+{
+  "image_sft": {
+    "file_name": "screenshot_summary/processed/llamafactory_sft.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "images": "images"
+    }
+  }
+}
+```
+
+Then edit `configs/qwen35_vl_freeze_sft.yaml`.
+
+Fields you usually need to change:
+
+- `model_name_or_path`: your local or Hugging Face model checkpoint.
+- `template`: keep `qwen2_vl` for Qwen2.5-VL-style models; change only if your model requires another LLaMA-Factory template.
+- `dataset_dir`: set to `data` if the dataset lives under LLaMA-Factory's `data/`.
+- `dataset`: must match the key you added in `dataset_info.json`, for example `image_sft`.
+- `output_dir`: where checkpoints and logs should be written.
+- `per_device_train_batch_size` and `gradient_accumulation_steps`: adjust for GPU memory.
+- `learning_rate`, `num_train_epochs`, `cutoff_len`: tune for your run.
+- `bf16`: set `false` if your GPU does not support bf16.
+- `freeze_trainable_layers`: positive N means only the last N LLM layers are trainable; earlier LLM layers are frozen.
+- `freeze_vision_tower`: `true` freezes the vision module.
+- `freeze_multi_modal_projector`: `false` keeps the projector trainable.
+
+Run training directly with LLaMA-Factory:
+
+```bash
+cd /path/to/LLaMA-Factory
+llamafactory-cli train /path/to/this-repo/configs/qwen35_vl_freeze_sft.yaml
+```
+
+If you use the merged dataset, register it as:
+
+```json
+{
+  "merged_image_sft": {
+    "file_name": "merged/processed/llamafactory_sft.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "images": "images"
+    }
+  }
+}
+```
+
+Then set this in the YAML:
 
 ```yaml
-stage: sft
-do_train: true
-finetuning_type: freeze
-
-model_name_or_path: /path/to/your/qwen-vl-small
-template: qwen2_vl
-trust_remote_code: true
-freeze_vision_tower: true
-freeze_multi_modal_projector: false
-freeze_trainable_layers: 8
-freeze_trainable_modules: all
-
-dataset_dir: data
-dataset: image_sft
-cutoff_len: 4096
-max_samples: null
-overwrite_cache: true
-preprocessing_num_workers: 8
-
-output_dir: saves/qwen35-vl-small/freeze/image_sft
-logging_steps: 10
-save_steps: 200
-plot_loss: true
-overwrite_output_dir: true
-
-per_device_train_batch_size: 1
-gradient_accumulation_steps: 8
-learning_rate: 1.0e-4
-num_train_epochs: 3
-lr_scheduler_type: cosine
-warmup_ratio: 0.03
-bf16: true
+dataset: merged_image_sft
 ```
-
-Freeze controls can be changed with environment variables:
-
-```bash
-FREEZE_TRAINABLE_LAYERS=12 \
-FREEZE_VISION_TOWER=true \
-FREEZE_MULTI_MODAL_PROJECTOR=false \
-MODEL_PATH=/path/to/your/qwen-vl-small \
-bash scripts/write_llamafactory_train_yaml.sh
-```
-
-In LLaMA-Factory, positive `freeze_trainable_layers` means the last N LLM layers
-are trainable. Earlier LLM layers are frozen. `freeze_vision_tower: true` freezes
-the vision module.
 
 If the target is an official Qwen2.5-VL small model, use a real checkpoint such
 as `Qwen/Qwen2.5-VL-3B-Instruct` and keep `template: qwen2_vl`. If your target
