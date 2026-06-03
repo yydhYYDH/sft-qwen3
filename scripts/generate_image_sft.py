@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import random
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -29,30 +30,41 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Call an OpenAI-compatible vision API for every image in data/raw."
     )
-    parser.add_argument("--raw-dir", default="data/raw", help="Directory containing images.")
+    parser.add_argument(
+        "--project-dir",
+        default=os.environ.get("PROJECT_DIR", "data/screenshot_summary"),
+        help="Project directory containing raw, processed, failed, and prompt.txt.",
+    )
+    parser.add_argument("--raw-dir", default=None, help="Directory containing images.")
     parser.add_argument(
         "--processed-dir",
-        default="data/processed",
+        default=None,
         help="Directory for per-image JSON outputs.",
     )
     parser.add_argument(
         "--failed-dir",
-        default="data/failed",
+        default=None,
         help="Directory for per-image failure marker JSON outputs.",
     )
     parser.add_argument(
         "--output",
-        default="data/processed/llamafactory_sft.json",
+        default=None,
         help="Aggregated LLaMA-Factory Alpaca-format JSON output.",
     )
     parser.add_argument(
         "--openai-output",
-        default="data/processed/llamafactory_openai_sft.json",
+        default=None,
         help="Aggregated OpenAI-message-format JSON output.",
     )
     parser.add_argument(
+        "--aggregate-every",
+        type=int,
+        default=int(os.environ.get("AGGREGATE_EVERY", "20")),
+        help="Rewrite aggregate dataset files every N completed images. Use 0 to only write at the end.",
+    )
+    parser.add_argument(
         "--dataset-dir",
-        default=os.environ.get("DATASET_DIR", "data"),
+        default=os.environ.get("DATASET_DIR"),
         help="Dataset root used by LLaMA-Factory. Image paths are stored relative to it.",
     )
     parser.add_argument(
@@ -62,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prompt-file",
-        default=os.environ.get("IMAGE_SFT_PROMPT_FILE", "prompts/summary_prompt.txt"),
+        default=os.environ.get("IMAGE_SFT_PROMPT_FILE"),
         help="File containing the prompt text. Used when --prompt and IMAGE_SFT_PROMPT are unset.",
     )
     parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "Qwen3.5-35B-A3B"))
@@ -106,6 +118,24 @@ def parse_args() -> argparse.Namespace:
         help="Regenerate per-image JSON even when it already exists.",
     )
     return parser.parse_args()
+
+
+def resolve_paths(args: argparse.Namespace) -> None:
+    project_dir = Path(args.project_dir)
+    if args.raw_dir is None:
+        args.raw_dir = str(project_dir / "raw")
+    if args.processed_dir is None:
+        args.processed_dir = str(project_dir / "processed")
+    if args.failed_dir is None:
+        args.failed_dir = str(project_dir / "failed")
+    if args.output is None:
+        args.output = str(Path(args.processed_dir) / "llamafactory_sft.json")
+    if args.openai_output is None:
+        args.openai_output = str(Path(args.processed_dir) / "llamafactory_openai_sft.json")
+    if args.dataset_dir is None:
+        args.dataset_dir = str(project_dir)
+    if args.prompt_file is None:
+        args.prompt_file = str(project_dir / "prompt.txt")
 
 
 def resolve_prompt(args: argparse.Namespace) -> str:
@@ -367,11 +397,25 @@ def write_aggregates(records: list[dict[str, Any]], output: Path, openai_output:
     output.parent.mkdir(parents=True, exist_ok=True)
     alpaca_rows = [record["llamafactory_alpaca"] for record in records]
     openai_rows = [record["llamafactory_openai"] for record in records]
-    output.write_text(json.dumps(alpaca_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    openai_output.write_text(
+    output_tmp = output.with_suffix(output.suffix + ".tmp")
+    openai_output_tmp = openai_output.with_suffix(openai_output.suffix + ".tmp")
+    output_tmp.write_text(
+        json.dumps(alpaca_rows, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    openai_output_tmp.write_text(
         json.dumps(openai_rows, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    output_tmp.replace(output)
+    openai_output_tmp.replace(openai_output)
+
+
+def refresh_aggregates(processed_dir: Path, output: Path, openai_output: Path) -> int:
+    records = load_records(processed_dir)
+    if records:
+        write_aggregates(records, output, openai_output)
+    return len(records)
 
 
 def write_failure_marker(image_path: Path, raw_dir: Path, failed_dir: Path, error: Exception) -> Path:
@@ -388,8 +432,49 @@ def write_failure_marker(image_path: Path, raw_dir: Path, failed_dir: Path, erro
     return failure_path
 
 
+def print_progress(
+    *,
+    done: int,
+    total: int,
+    created: int,
+    skipped: int,
+    failed: int,
+    current: Path | None = None,
+    final: bool = False,
+) -> None:
+    width = shutil.get_terminal_size((100, 20)).columns
+    percent = (done / total * 100) if total else 100.0
+    bar_width = 28
+    filled = int(bar_width * done / total) if total else bar_width
+    bar = "#" * filled + "-" * (bar_width - filled)
+    suffix = f" current={current.name}" if current else ""
+    line = (
+        f"[{bar}] {done}/{total} {percent:5.1f}% "
+        f"created={created} skipped={skipped} failed={failed}{suffix}"
+    )
+    if len(line) > width:
+        line = line[: max(0, width - 3)] + "..."
+    print("\r" + line.ljust(width), end="\n" if final else "", flush=True)
+
+
+def maybe_refresh_aggregates(
+    *,
+    done: int,
+    last_aggregate_done: int,
+    aggregate_every: int,
+    processed_dir: Path,
+    output: Path,
+    openai_output: Path,
+) -> tuple[int, int | None]:
+    if aggregate_every <= 0 or done - last_aggregate_done < aggregate_every:
+        return last_aggregate_done, None
+    valid_records = refresh_aggregates(processed_dir, output, openai_output)
+    return done, valid_records
+
+
 def main() -> int:
     args = parse_args()
+    resolve_paths(args)
     args.prompt = resolve_prompt(args)
     raw_dir = Path(args.raw_dir)
     dataset_dir = Path(args.dataset_dir)
@@ -414,31 +499,104 @@ def main() -> int:
     created = 0
     skipped = 0
     failed = 0
+    done = 0
+    last_aggregate_done = 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
             executor.submit(process_one, args, raw_dir, dataset_dir, processed_dir, image_path): image_path
             for image_path in images
         }
+        print_progress(
+            done=done,
+            total=len(images),
+            created=created,
+            skipped=skipped,
+            failed=failed,
+        )
         for future in concurrent.futures.as_completed(futures):
             image_path = futures[future]
             try:
                 status, json_path = future.result()
             except Exception as exc:
                 failed += 1
+                done += 1
                 failure_path = write_failure_marker(image_path, raw_dir, failed_dir, exc)
+                print()
                 print(f"[failed] {image_path}: {exc} -> {failure_path}")
+                print_progress(
+                    done=done,
+                    total=len(images),
+                    created=created,
+                    skipped=skipped,
+                    failed=failed,
+                    current=image_path,
+                )
+                last_aggregate_done, valid_records = maybe_refresh_aggregates(
+                    done=done,
+                    last_aggregate_done=last_aggregate_done,
+                    aggregate_every=args.aggregate_every,
+                    processed_dir=processed_dir,
+                    output=output,
+                    openai_output=openai_output,
+                )
+                if valid_records is not None:
+                    print()
+                    print(f"[aggregate] valid_records={valid_records} at_done={done}")
+                    print_progress(
+                        done=done,
+                        total=len(images),
+                        created=created,
+                        skipped=skipped,
+                        failed=failed,
+                        current=image_path,
+                    )
                 continue
 
             if status == "created":
                 created += 1
             elif status == "skipped":
                 skipped += 1
-            print(f"[{status}] {image_path} -> {json_path}")
+            done += 1
+            print_progress(
+                done=done,
+                total=len(images),
+                created=created,
+                skipped=skipped,
+                failed=failed,
+                current=image_path,
+            )
+            last_aggregate_done, valid_records = maybe_refresh_aggregates(
+                done=done,
+                last_aggregate_done=last_aggregate_done,
+                aggregate_every=args.aggregate_every,
+                processed_dir=processed_dir,
+                output=output,
+                openai_output=openai_output,
+            )
+            if valid_records is not None:
+                print()
+                print(f"[aggregate] valid_records={valid_records} at_done={done}")
+                print_progress(
+                    done=done,
+                    total=len(images),
+                    created=created,
+                    skipped=skipped,
+                    failed=failed,
+                    current=image_path,
+                )
 
-    records = load_records(processed_dir)
-    if records:
-        write_aggregates(records, output, openai_output)
+    print_progress(
+        done=done,
+        total=len(images),
+        created=created,
+        skipped=skipped,
+        failed=failed,
+        final=True,
+    )
+
+    valid_records = refresh_aggregates(processed_dir, output, openai_output)
+    if valid_records:
         aggregate_message = f"aggregate={output} openai_aggregate={openai_output}"
     else:
         aggregate_message = "aggregate=not_written_no_records"

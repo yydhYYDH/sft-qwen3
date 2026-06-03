@@ -20,10 +20,7 @@ env/
 *.pem
 
 # Generated data
-data/raw/
-data/processed/
-data/failed/
-data/**/*.tmp
+data/
 
 # Optional local collection outputs
 data_collect/
@@ -58,3 +55,8 @@ Thumbs.db
 
 # Alternate Git directory used because this environment has a read-only .git placeholder.
 .repo.git/
+
+*.png
+*.jpg
+
+data_chat

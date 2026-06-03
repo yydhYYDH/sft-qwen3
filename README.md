@@ -1,8 +1,33 @@
 # Image SFT Data Generation
 
-This repo contains a helper script that sends every image under `data/raw` to an
-OpenAI-compatible vision chat API and writes one JSON file per image under
-`data/processed`.
+This repo contains helper scripts that send images to an OpenAI-compatible
+vision chat API and produce LLaMA-Factory SFT datasets.
+
+## Project Layout
+
+Each data project is self-contained:
+
+```text
+data/
+  screenshot_summary/
+    raw/
+    processed/
+    failed/
+    prompt.txt
+  chat_summary/
+    raw/
+    resized/
+    processed/
+    failed/
+    prompt.txt
+```
+
+Current projects:
+
+```text
+data/screenshot_summary  # uses data/screenshot_summary/prompt.txt
+data/chat_summary        # uses data/chat_summary/prompt.txt
+```
 
 ## Usage
 
@@ -16,11 +41,15 @@ python3 scripts/generate_image_sft.py --workers 4
 `OPENAI_API_KEY` is optional. If it is empty, the request is sent without an
 `Authorization` header.
 
-The default prompt is read from:
+By default, the script uses:
 
 ```text
-prompts/summary_prompt.txt
+--project-dir data/screenshot_summary
 ```
+
+That means it reads images from `data/screenshot_summary/raw`, writes per-image
+JSON files to `data/screenshot_summary/processed`, and reads the prompt from
+`data/screenshot_summary/prompt.txt`.
 
 Prompt priority is:
 
@@ -28,15 +57,21 @@ Prompt priority is:
 --prompt > IMAGE_SFT_PROMPT > --prompt-file
 ```
 
+Run the chat project:
+
+```bash
+python3 scripts/generate_image_sft.py \
+  --project-dir data/chat_summary \
+  --workers 8
+```
+
 Useful options:
 
 ```bash
 python3 scripts/generate_image_sft.py \
-  --raw-dir data/raw \
-  --processed-dir data/processed \
-  --dataset-dir data \
-  --prompt-file prompts/summary_prompt.txt \
+  --project-dir data/screenshot_summary \
   --workers 8 \
+  --aggregate-every 20 \
   --model Qwen3.5-35B-A3B \
   --temperature 0.7 \
   --top-p 0.8 \
@@ -52,25 +87,29 @@ Those sampling defaults are already built into the script.
 Existing per-image JSON files are skipped by default. Use `--force` to regenerate
 them.
 
+Aggregate dataset files are rewritten every 20 completed images by default. Use
+`--aggregate-every 0` to write aggregates only at the end, or a smaller value
+such as `--aggregate-every 1` for the most conservative checkpointing.
+
 Before writing SFT records, the script removes any text up to and including the
 last `</think>` marker in the model response. The remaining answer must be valid
 JSON. If JSON parsing fails, that image is marked as failed and excluded from the
 aggregate LLaMA-Factory datasets. Failure markers are written under `data/failed`
-by default.
+inside each project by default.
 
 ## Outputs
 
 For each image, the script writes:
 
 ```text
-data/processed/<image_stem>.json
+data/<project>/processed/<image_stem>.json
 ```
 
 It also writes two aggregate datasets:
 
 ```text
-data/processed/llamafactory_sft.json
-data/processed/llamafactory_openai_sft.json
+data/<project>/processed/llamafactory_sft.json
+data/<project>/processed/llamafactory_openai_sft.json
 ```
 
 `llamafactory_sft.json` uses LLaMA-Factory's Alpaca multimodal format:
@@ -130,65 +169,48 @@ the number of paths in `images`.
 
 ## LLaMA-Factory Training
 
-Create a fresh conda environment:
+Prepare conda, PyTorch, and LLaMA-Factory separately. These scripts do not
+install dependencies.
+
+Write the training YAML only:
 
 ```bash
-conda create -n llamafactory-qwen-sft python=3.10 -y
-conda activate llamafactory-qwen-sft
+MODEL_PATH=/path/to/your/qwen-vl-small \
+bash scripts/write_llamafactory_train_yaml.sh
 ```
 
-Install PyTorch first. Pick the command that matches your CUDA version:
+The default YAML path is:
+
+```text
+configs/qwen35_vl_freeze_sft.yaml
+```
+
+Start training:
 
 ```bash
-# CUDA 12.1
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Or CUDA 11.8
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+MODEL_PATH=/path/to/your/qwen-vl-small \
+LLAMAFACTORY_DIR=/path/to/LLaMA-Factory \
+bash scripts/train_llamafactory_qwen_vl.sh
 ```
 
-Install LLaMA-Factory:
+The train script copies this repo's raw images and
+`data/processed/llamafactory_sft.json` into LLaMA-Factory, updates
+`data/dataset_info.json`, writes the freeze SFT yaml, and starts training.
 
-```bash
-git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git
-cd LLaMA-Factory
-pip install -e ".[torch,metrics]"
-```
-
-Put this repo's generated data under LLaMA-Factory's default dataset directory:
-
-```bash
-mkdir -p data/raw data/processed
-cp -r /mnt/e/WAIC/sft/data/raw/. data/raw/
-cp /mnt/e/WAIC/sft/data/processed/llamafactory_sft.json data/processed/
-```
-
-Add the dataset entry to `data/dataset_info.json`:
-
-```json
-{
-  "image_sft": {
-    "file_name": "processed/llamafactory_sft.json",
-    "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output",
-      "images": "images"
-    }
-  }
-}
-```
-
-Create `examples/train_lora/qwen35_vl_lora_sft.yaml`:
+The generated YAML uses LLaMA-Factory freeze fine-tuning:
 
 ```yaml
 stage: sft
 do_train: true
-finetuning_type: lora
+finetuning_type: freeze
 
-model_name_or_path: /path/to/your/qwen3.5-vl-small
+model_name_or_path: /path/to/your/qwen-vl-small
 template: qwen2_vl
 trust_remote_code: true
+freeze_vision_tower: true
+freeze_multi_modal_projector: false
+freeze_trainable_layers: 8
+freeze_trainable_modules: all
 
 dataset_dir: data
 dataset: image_sft
@@ -197,7 +219,7 @@ max_samples: null
 overwrite_cache: true
 preprocessing_num_workers: 8
 
-output_dir: saves/qwen35-vl-small/lora/image_sft
+output_dir: saves/qwen35-vl-small/freeze/image_sft
 logging_steps: 10
 save_steps: 200
 plot_loss: true
@@ -210,18 +232,21 @@ num_train_epochs: 3
 lr_scheduler_type: cosine
 warmup_ratio: 0.03
 bf16: true
-
-lora_rank: 16
-lora_alpha: 32
-lora_dropout: 0.05
-lora_target: all
 ```
 
-Start training:
+Freeze controls can be changed with environment variables:
 
 ```bash
-llamafactory-cli train examples/train_lora/qwen35_vl_lora_sft.yaml
+FREEZE_TRAINABLE_LAYERS=12 \
+FREEZE_VISION_TOWER=true \
+FREEZE_MULTI_MODAL_PROJECTOR=false \
+MODEL_PATH=/path/to/your/qwen-vl-small \
+bash scripts/write_llamafactory_train_yaml.sh
 ```
+
+In LLaMA-Factory, positive `freeze_trainable_layers` means the last N LLM layers
+are trainable. Earlier LLM layers are frozen. `freeze_vision_tower: true` freezes
+the vision module.
 
 If the target is an official Qwen2.5-VL small model, use a real checkpoint such
 as `Qwen/Qwen2.5-VL-3B-Instruct` and keep `template: qwen2_vl`. If your target
