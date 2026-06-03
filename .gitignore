@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.conda/
+
+# Local environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Generated data
+data/raw/
+data/processed/
+data/failed/
+data/**/*.tmp
+
+# Optional local collection outputs
+data_collect/
+
+# Logs and runtime artifacts
+*.log
+logs/
+runs/
+saves/
+outputs/
+wandb/
+
+# Model/checkpoint artifacts
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+checkpoints/
+models/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Codex/session metadata
+.agents/
+.codex/
+
+# Alternate Git directory used because this environment has a read-only .git placeholder.
+.repo.git/
