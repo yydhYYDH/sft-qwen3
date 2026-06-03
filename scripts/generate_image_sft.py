@@ -252,13 +252,36 @@ def strip_thinking_text(answer: str) -> str:
     return answer[think_end + len("</think>") :].strip()
 
 
+def strip_markdown_code_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    first_line_end = stripped.find("\n")
+    if first_line_end == -1:
+        return stripped
+
+    opening = stripped[:first_line_end].strip()
+    if not opening.startswith("```"):
+        return stripped
+
+    body = stripped[first_line_end + 1 :].strip()
+    if not body.endswith("```"):
+        return stripped
+
+    return body[:-3].strip()
+
+
 def normalize_json_answer(answer: str) -> str:
-    stripped = strip_thinking_text(answer)
+    stripped = strip_markdown_code_fence(strip_thinking_text(answer))
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
         preview = stripped[:200].replace("\n", "\\n")
-        raise RuntimeError(f"Answer is not valid JSON after </think> stripping: {preview}") from exc
+        raise RuntimeError(
+            "Answer is not valid JSON after </think> and Markdown fence stripping: "
+            f"{preview}"
+        ) from exc
     return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
 
