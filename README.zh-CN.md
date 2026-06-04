@@ -200,6 +200,60 @@ data/merged/processed/llamafactory_sft.json
 
 这样训练时 `dataset_dir: data` 就能正确找到图片。
 
+## 测试集与小模型预测
+
+测试项目目录已经预留：
+
+```text
+data/test_summary/
+  raw/          # 你把测试图片放这里
+  processed/    # 大模型生成的测试集回答
+  predictions/  # 小模型预测结果
+  failed/
+  prompt.txt
+```
+
+先把测试图片放进：
+
+```text
+data/test_summary/raw
+```
+
+用大模型生成测试图片对应的参考回答：
+
+```bash
+python3 scripts/generate_image_sft.py \
+  --project-dir data/test_summary \
+  --workers 4
+```
+
+这会生成：
+
+```text
+data/test_summary/processed/llamafactory_sft.json
+```
+
+用本地小模型生成预测回答：
+
+```bash
+python3 scripts/run_local_vlm_predictions.py \
+  --project-dir data/test_summary \
+  --model-path /path/to/your/small-vlm \
+  --max-new-tokens 1024
+```
+
+预测结果会保存到：
+
+```text
+data/test_summary/predictions
+```
+
+如果要重新生成预测，加：
+
+```bash
+--force
+```
+
 ## LLaMA-Factory 数据注册
 
 如果只训练截图项目，把数据复制到 LLaMA-Factory：

@@ -167,6 +167,42 @@ OpenAI-message-style file, register it as sharegpt with OpenAI tags:
 LLaMA-Factory requires the number of `<image>` tags in the prompt text to match
 the number of paths in `images`.
 
+## 测试集与小模型预测
+
+测试集目录：
+
+```text
+data/test_summary/
+  raw/          # 你把测试图片放这里
+  processed/    # 大模型回答
+  predictions/  # 小模型回答
+  failed/
+  prompt.txt
+```
+
+你放测试图片后，先用大模型生成参考回答：
+
+```bash
+python3 scripts/generate_image_sft.py \
+  --project-dir data/test_summary \
+  --workers 4
+```
+
+再用本地小模型生成预测：
+
+```bash
+python3 scripts/run_local_vlm_predictions.py \
+  --project-dir data/test_summary \
+  --model-path /path/to/your/small-vlm \
+  --max-new-tokens 1024
+```
+
+输出会保存到：
+
+```text
+data/test_summary/predictions
+```
+
 ## LLaMA-Factory Training
 
 Install LLaMA-Factory in a Python 3.12 conda environment:
