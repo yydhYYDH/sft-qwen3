@@ -169,8 +169,20 @@ the number of paths in `images`.
 
 ## LLaMA-Factory Training
 
-Prepare conda, PyTorch, and LLaMA-Factory separately. This repo only provides an
-example YAML:
+Install LLaMA-Factory in a Python 3.12 conda environment:
+
+```bash
+conda create -n llamafactory-qwen-sft python=3.12 -y
+conda activate llamafactory-qwen-sft
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git
+cd LLaMA-Factory
+pip install -e ".[torch,metrics]" --no-build-isolation
+```
+
+This repo provides an example YAML:
 
 ```text
 configs/qwen35_vl_freeze_sft.yaml
@@ -224,8 +236,12 @@ Run training directly with LLaMA-Factory:
 
 ```bash
 cd /path/to/LLaMA-Factory
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 llamafactory-cli train /path/to/this-repo/configs/qwen35_vl_freeze_sft.yaml
 ```
+
+Change `CUDA_VISIBLE_DEVICES` if you only want to use part of the GPUs, for
+example `export CUDA_VISIBLE_DEVICES=0,1`.
 
 If you use the merged dataset, register it as:
 

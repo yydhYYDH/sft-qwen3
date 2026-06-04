@@ -249,6 +249,19 @@ LLaMA-Factory 要求文本中的 `<image>` 数量和 `images` 路径数量一致
 
 ## 训练 YAML
 
+先创建 Python 3.12 conda 环境，并安装 CUDA 12.1 版 PyTorch 和 LLaMA-Factory：
+
+```bash
+conda create -n llamafactory-qwen-sft python=3.12 -y
+conda activate llamafactory-qwen-sft
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+git clone --depth 1 https://github.com/hiyouga/LLaMA-Factory.git
+cd LLaMA-Factory
+pip install -e ".[torch,metrics]" --no-build-isolation
+```
+
 示例文件：
 
 ```text
@@ -276,7 +289,14 @@ configs/qwen35_vl_freeze_sft.yaml
 
 ```bash
 cd /path/to/LLaMA-Factory
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 llamafactory-cli train /path/to/this-repo/configs/qwen35_vl_freeze_sft.yaml
+```
+
+如果只想使用部分 GPU，修改 `CUDA_VISIBLE_DEVICES` 即可，例如：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1
 ```
 
 注意：目标模型必须是视觉语言模型。纯文本 Qwen 模型不能直接训练包含 `images` 的数据集。

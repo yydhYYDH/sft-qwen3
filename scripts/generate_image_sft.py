@@ -57,6 +57,16 @@ def parse_args() -> argparse.Namespace:
         help="Aggregated OpenAI-message-format JSON output.",
     )
     parser.add_argument(
+        "--dataset-info",
+        default=None,
+        help="LLaMA-Factory dataset_info.json path. Defaults to <project-dir>/dataset_info.json.",
+    )
+    parser.add_argument(
+        "--dataset-name",
+        default=os.environ.get("DATASET_NAME"),
+        help="Dataset name written to dataset_info.json. Defaults to <project-dir-name>_sft.",
+    )
+    parser.add_argument(
         "--aggregate-every",
         type=int,
         default=int(os.environ.get("AGGREGATE_EVERY", "20")),
@@ -132,6 +142,10 @@ def resolve_paths(args: argparse.Namespace) -> None:
         args.output = str(Path(args.processed_dir) / "llamafactory_sft.json")
     if args.openai_output is None:
         args.openai_output = str(Path(args.processed_dir) / "llamafactory_openai_sft.json")
+    if args.dataset_info is None:
+        args.dataset_info = str(project_dir / "dataset_info.json")
+    if args.dataset_name is None:
+        args.dataset_name = f"{project_dir.name}_sft"
     if args.dataset_dir is None:
         args.dataset_dir = str(project_dir)
     if args.prompt_file is None:
@@ -434,10 +448,47 @@ def write_aggregates(records: list[dict[str, Any]], output: Path, openai_output:
     openai_output_tmp.replace(openai_output)
 
 
-def refresh_aggregates(processed_dir: Path, output: Path, openai_output: Path) -> int:
+def write_dataset_info(dataset_info: Path, dataset_name: str, output: Path, project_dir: Path) -> None:
+    try:
+        file_name = output.relative_to(project_dir).as_posix()
+    except ValueError:
+        file_name = output.as_posix()
+
+    if dataset_info.exists():
+        data = json.loads(dataset_info.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise RuntimeError(f"dataset_info must be a JSON object: {dataset_info}")
+    else:
+        data = {}
+
+    data[dataset_name] = {
+        "file_name": file_name,
+        "columns": {
+            "prompt": "instruction",
+            "query": "input",
+            "response": "output",
+            "images": "images",
+        },
+    }
+
+    dataset_info.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dataset_info.with_suffix(dataset_info.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(dataset_info)
+
+
+def refresh_aggregates(
+    processed_dir: Path,
+    output: Path,
+    openai_output: Path,
+    dataset_info: Path,
+    dataset_name: str,
+    project_dir: Path,
+) -> int:
     records = load_records(processed_dir)
     if records:
         write_aggregates(records, output, openai_output)
+        write_dataset_info(dataset_info, dataset_name, output, project_dir)
     return len(records)
 
 
@@ -488,10 +539,20 @@ def maybe_refresh_aggregates(
     processed_dir: Path,
     output: Path,
     openai_output: Path,
+    dataset_info: Path,
+    dataset_name: str,
+    project_dir: Path,
 ) -> tuple[int, int | None]:
     if aggregate_every <= 0 or done - last_aggregate_done < aggregate_every:
         return last_aggregate_done, None
-    valid_records = refresh_aggregates(processed_dir, output, openai_output)
+    valid_records = refresh_aggregates(
+        processed_dir,
+        output,
+        openai_output,
+        dataset_info,
+        dataset_name,
+        project_dir,
+    )
     return done, valid_records
 
 
@@ -499,12 +560,14 @@ def main() -> int:
     args = parse_args()
     resolve_paths(args)
     args.prompt = resolve_prompt(args)
+    project_dir = Path(args.project_dir)
     raw_dir = Path(args.raw_dir)
     dataset_dir = Path(args.dataset_dir)
     processed_dir = Path(args.processed_dir)
     failed_dir = Path(args.failed_dir)
     output = Path(args.output)
     openai_output = Path(args.openai_output)
+    dataset_info = Path(args.dataset_info)
 
     if not raw_dir.exists():
         raise SystemExit(f"Raw directory does not exist: {raw_dir}")
@@ -562,6 +625,9 @@ def main() -> int:
                     processed_dir=processed_dir,
                     output=output,
                     openai_output=openai_output,
+                    dataset_info=dataset_info,
+                    dataset_name=args.dataset_name,
+                    project_dir=project_dir,
                 )
                 if valid_records is not None:
                     print()
@@ -596,6 +662,9 @@ def main() -> int:
                 processed_dir=processed_dir,
                 output=output,
                 openai_output=openai_output,
+                dataset_info=dataset_info,
+                dataset_name=args.dataset_name,
+                project_dir=project_dir,
             )
             if valid_records is not None:
                 print()
@@ -618,9 +687,19 @@ def main() -> int:
         final=True,
     )
 
-    valid_records = refresh_aggregates(processed_dir, output, openai_output)
+    valid_records = refresh_aggregates(
+        processed_dir,
+        output,
+        openai_output,
+        dataset_info,
+        args.dataset_name,
+        project_dir,
+    )
     if valid_records:
-        aggregate_message = f"aggregate={output} openai_aggregate={openai_output}"
+        aggregate_message = (
+            f"aggregate={output} openai_aggregate={openai_output} "
+            f"dataset_info={dataset_info} dataset_name={args.dataset_name}"
+        )
     else:
         aggregate_message = "aggregate=not_written_no_records"
     print(f"done created={created} skipped={skipped} failed={failed} {aggregate_message}")
