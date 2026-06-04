@@ -11,7 +11,8 @@ from typing import Any
 
 import torch
 from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoProcessor
+import transformers
+from transformers import AutoProcessor
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -71,9 +72,31 @@ def dtype_from_name(name: str) -> str | torch.dtype:
     }[name]
 
 
+def resolve_model_class() -> Any:
+    candidates = [
+        "Qwen3_5_VLForConditionalGeneration",
+        "Qwen3VLForConditionalGeneration",
+        "Qwen2_5_VLForConditionalGeneration",
+        "Qwen2VLForConditionalGeneration",
+        "AutoModelForImageTextToText",
+        "AutoModelForVision2Seq",
+        "AutoModelForCausalLM",
+    ]
+    for name in candidates:
+        model_class = getattr(transformers, name, None)
+        if model_class is not None:
+            print(f"Using model class: transformers.{name}")
+            return model_class
+    raise RuntimeError(
+        "No compatible VLM model class found in transformers. "
+        "Please upgrade transformers or install the model's custom code dependencies."
+    )
+
+
 def load_model_and_processor(args: argparse.Namespace) -> tuple[Any, Any]:
     processor = AutoProcessor.from_pretrained(args.model_path, trust_remote_code=True)
-    model = AutoModelForVision2Seq.from_pretrained(
+    model_class = resolve_model_class()
+    model = model_class.from_pretrained(
         args.model_path,
         torch_dtype=dtype_from_name(args.torch_dtype),
         device_map=args.device_map,
@@ -117,8 +140,18 @@ def build_inputs(processor: Any, prompt: str, image_path: Path, model_device: to
     return {key: value.to(model_device) if hasattr(value, "to") else value for key, value in inputs.items()}
 
 
+def get_input_device(model: Any) -> torch.device:
+    device = getattr(model, "device", None)
+    if isinstance(device, torch.device) and device.type != "meta":
+        return device
+    for parameter in model.parameters():
+        if parameter.device.type != "meta":
+            return parameter.device
+    return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
 def generate_one(model: Any, processor: Any, prompt: str, image_path: Path, args: argparse.Namespace) -> str:
-    model_device = next(model.parameters()).device
+    model_device = get_input_device(model)
     inputs = build_inputs(processor, prompt, image_path, model_device)
 
     do_sample = args.temperature > 0
